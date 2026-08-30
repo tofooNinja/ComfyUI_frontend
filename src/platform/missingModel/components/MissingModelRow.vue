@@ -82,6 +82,18 @@
         >
           {{ modelMetadataLabel }}
         </span>
+        <span
+          v-if="serverDownloadError !== undefined"
+          data-testid="missing-model-server-download-error"
+          role="alert"
+          class="block text-2xs/tight wrap-break-word text-destructive-background"
+        >
+          {{
+            t('rightSidePanel.missingModels.downloadFailed', {
+              error: serverDownloadError
+            })
+          }}
+        </span>
       </span>
 
       <template v-if="isCloud && canCloudImport">
@@ -156,8 +168,35 @@
             </Button>
           </template>
         </AccessibleTooltip>
+        <div
+          v-if="showDownloadAction && isServerDownloadActive"
+          role="progressbar"
+          data-testid="missing-model-server-download-progress"
+          :aria-label="t('rightSidePanel.missingModels.downloading')"
+          :aria-valuenow="serverDownloadPercent"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          class="flex h-8 w-16 shrink-0 items-center"
+        >
+          <span
+            class="block h-1.5 w-full overflow-hidden rounded-full bg-secondary-background-selected"
+          >
+            <span
+              class="block h-full rounded-full bg-primary-background transition-all duration-200 ease-linear"
+              :style="{ width: `${serverDownloadPercent}%` }"
+            />
+          </span>
+        </div>
+        <span
+          v-else-if="showDownloadAction && isServerDownloadCompleted"
+          data-testid="missing-model-server-download-done"
+          class="inline-flex h-8 shrink-0 items-center gap-1 text-xs text-muted-foreground"
+        >
+          <i aria-hidden="true" class="icon-[lucide--check] size-4" />
+          {{ t('rightSidePanel.missingModels.downloaded') }}
+        </span>
         <Button
-          v-if="showDownloadAction"
+          v-else-if="showDownloadAction"
           data-testid="missing-model-download"
           variant="secondary"
           size="sm"
@@ -338,6 +377,7 @@ const {
   gatedRepoUrlFor,
   prefetchModelMetadata,
   downloadMissingModel,
+  serverDownloadFor,
   openModelAccessPage
 } = useMissingModelDownload()
 
@@ -401,6 +441,27 @@ const modelMetadataLabel = computed(() =>
   [modelTypeLabel.value, downloadSizeLabel.value].filter(Boolean).join(' · ')
 )
 
+const serverDownload = computed(() => {
+  const url = model.representative.url
+  return url ? serverDownloadFor(url) : undefined
+})
+const isServerDownloadActive = computed(
+  () =>
+    serverDownload.value?.status === 'running' ||
+    serverDownload.value?.status === 'created'
+)
+const isServerDownloadCompleted = computed(
+  () => serverDownload.value?.status === 'completed'
+)
+const serverDownloadError = computed(() =>
+  serverDownload.value?.status === 'failed'
+    ? (serverDownload.value.error ?? '')
+    : undefined
+)
+const serverDownloadPercent = computed(() =>
+  Math.round((serverDownload.value?.progress ?? 0) * 100)
+)
+
 const missingModelUploadContext = computed<
   UploadModelDialogContext | undefined
 >(() => {
@@ -441,7 +502,7 @@ onMounted(() => {
 function handleDownload() {
   const rep = model.representative
   if (rep.url && rep.directory) {
-    downloadMissingModel({
+    void downloadMissingModel({
       name: rep.name,
       url: rep.url,
       directory: rep.directory

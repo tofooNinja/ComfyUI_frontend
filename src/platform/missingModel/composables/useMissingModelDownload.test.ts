@@ -8,14 +8,21 @@ import { useMissingModelStore } from '@/platform/missingModel/missingModelStore'
 const mocks = vi.hoisted(() => ({
   downloadModel: vi.fn<typeof MissingModelDownload.downloadModel>(),
   fetchModelMetadata: vi.fn<typeof MissingModelDownload.fetchModelMetadata>(),
+  fetchServerModelDownload:
+    vi.fn<typeof MissingModelDownload.fetchServerModelDownload>(),
   isTrustedHuggingFaceUrl:
     vi.fn<typeof MissingModelDownload.isTrustedHuggingFaceUrl>(),
   openGatedRepoPage: vi.fn<typeof MissingModelDownload.openGatedRepoPage>()
 }))
 
+vi.mock('@/stores/assetsStore', () => ({
+  useAssetsStore: () => ({ invalidateModelsForCategory: vi.fn() })
+}))
+
 vi.mock('@/platform/missingModel/missingModelDownload', () => ({
   downloadModel: mocks.downloadModel,
   fetchModelMetadata: mocks.fetchModelMetadata,
+  fetchServerModelDownload: mocks.fetchServerModelDownload,
   isTrustedHuggingFaceUrl: mocks.isTrustedHuggingFaceUrl,
   openGatedRepoPage: mocks.openGatedRepoPage
 }))
@@ -80,7 +87,7 @@ describe('useMissingModelDownload', () => {
     expect(mocks.fetchModelMetadata).not.toHaveBeenCalled()
   })
 
-  it('downloads with the current missing-model folder paths', () => {
+  it('downloads with the current missing-model folder paths', async () => {
     const store = useMissingModelStore()
     store.setFolderPaths({ checkpoints: ['/models/checkpoints'] })
     const model = {
@@ -88,12 +95,65 @@ describe('useMissingModelDownload', () => {
       url: downloadUrl,
       directory: 'checkpoints'
     }
+    mocks.downloadModel.mockResolvedValueOnce(undefined)
 
-    useMissingModelDownload().downloadMissingModel(model)
+    await useMissingModelDownload().downloadMissingModel(model)
 
     expect(mocks.downloadModel).toHaveBeenCalledWith(model, {
       checkpoints: ['/models/checkpoints']
     })
+    expect(store.serverDownloads[downloadUrl]).toBeUndefined()
+  })
+
+  it('tracks a server-side download until it completes', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useMissingModelStore()
+      const model = {
+        name: 'model.safetensors',
+        url: downloadUrl,
+        directory: 'checkpoints'
+      }
+      const task = {
+        task_id: 'task-1',
+        status: 'created' as const,
+        downloaded: 0,
+        total: 100,
+        progress: 0,
+        error: null
+      }
+      mocks.downloadModel.mockResolvedValueOnce(task)
+      mocks.fetchServerModelDownload
+        .mockResolvedValueOnce({
+          ...task,
+          status: 'running',
+          downloaded: 50,
+          progress: 0.5
+        })
+        .mockResolvedValueOnce({
+          ...task,
+          status: 'completed',
+          downloaded: 100,
+          progress: 1
+        })
+
+      const { downloadMissingModel, serverDownloadFor } =
+        useMissingModelDownload()
+      await downloadMissingModel(model)
+      expect(serverDownloadFor(downloadUrl)?.status).toBe('created')
+
+      // A second click while running must not start another download.
+      await downloadMissingModel(model)
+      expect(mocks.downloadModel).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(serverDownloadFor(downloadUrl)?.progress).toBe(0.5)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(serverDownloadFor(downloadUrl)?.status).toBe('completed')
+      expect(store.serverDownloads[downloadUrl]?.downloaded).toBe(100)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('opens a trusted access page through the Desktop bridge', async () => {

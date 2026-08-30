@@ -1,5 +1,6 @@
 import { downloadUrlToHfRepoUrl, isCivitaiModelUrl } from '@/utils/formatUtil'
 import { isDesktop } from '@/platform/distribution/types'
+import { api } from '@/scripts/api'
 import { useElectronDownloadStore } from '@/stores/electronDownloadStore'
 import { useSidebarTabStore } from '@/stores/workspace/sidebarTabStore'
 import type { ComfyDesktop2Bridge } from '@/types'
@@ -34,6 +35,76 @@ export interface ModelWithUrl {
   name: string
   url: string
   directory: string
+}
+
+/** Task returned by the server's `POST /models/download` endpoint. */
+export interface ServerDownloadTask {
+  task_id: string
+  status: 'created' | 'running' | 'completed' | 'failed'
+  downloaded: number
+  total: number | null
+  progress: number
+  error: string | null
+}
+
+/**
+ * Asks the ComfyUI server to download the model into its models directory.
+ * Resolves to `null` when the server has no such endpoint (older core), so the
+ * caller can fall back to a browser download. Rejected requests (untrusted
+ * host, bad filename, existing file, ...) resolve to a failed task.
+ */
+export async function requestServerModelDownload(
+  model: ModelWithUrl
+): Promise<ServerDownloadTask | null> {
+  let response: Response
+  try {
+    response = await api.fetchApi('/models/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: model.url,
+        folder: model.directory,
+        filename: model.name
+      })
+    })
+  } catch (error: unknown) {
+    console.warn('[missingModelDownload] Server download unavailable:', error)
+    return null
+  }
+  if (response.status === 404) return null
+
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`
+    try {
+      const body: { error?: string } = await response.json()
+      if (body.error) message = body.error
+    } catch {
+      // keep the status message
+    }
+    return {
+      task_id: '',
+      status: 'failed',
+      downloaded: 0,
+      total: null,
+      progress: 0,
+      error: message
+    }
+  }
+  return (await response.json()) as ServerDownloadTask
+}
+
+export async function fetchServerModelDownload(
+  taskId: string
+): Promise<ServerDownloadTask | null> {
+  try {
+    const response = await api.fetchApi(
+      `/models/download/${encodeURIComponent(taskId)}`
+    )
+    if (!response.ok) return null
+    return (await response.json()) as ServerDownloadTask
+  } catch {
+    return null
+  }
 }
 
 async function startDesktop2ModelDownload(
@@ -112,10 +183,15 @@ export function isModelDownloadable(model: ModelWithUrl): boolean {
   return true
 }
 
-export function downloadModel(
+/**
+ * Starts a model download. Returns the server-side task when the backend
+ * downloaded the model itself; `undefined` when the download was handed to the
+ * desktop app or the browser instead.
+ */
+export async function downloadModel(
   model: ModelWithUrl,
   paths: Record<string, string[]>
-): void {
+): Promise<ServerDownloadTask | undefined> {
   const desktop2Bridge = window.__comfyDesktop2
   if (desktop2Bridge?.downloadModel && !desktop2Bridge.isRemote()) {
     void startDesktop2ModelDownload(desktop2Bridge, model)
@@ -123,6 +199,8 @@ export function downloadModel(
   }
 
   if (!isDesktop) {
+    const task = await requestServerModelDownload(model)
+    if (task) return task
     openUrlInNewTab(model.url, model.name)
     return
   }

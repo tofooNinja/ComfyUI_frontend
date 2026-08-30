@@ -4254,6 +4254,9 @@
       "missingModelsTitle": "Missing Models",
       "downloadModel": "Download {model}",
       "downloadAll": "Download all",
+      "downloading": "Downloading...",
+      "downloaded": "Downloaded",
+      "downloadFailed": "Download failed: {error}",
       "refresh": "Refresh",
       "refreshing": "Refreshing missing models.",
       "refreshFailed": "Failed to refresh missing models. Please try again."
