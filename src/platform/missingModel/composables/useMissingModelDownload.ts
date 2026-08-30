@@ -1,11 +1,18 @@
 import {
   downloadModel,
+  fetchServerModelDownload,
   isTrustedHuggingFaceUrl,
   openGatedRepoPage
 } from '@/platform/missingModel/missingModelDownload'
-import type { ModelWithUrl } from '@/platform/missingModel/missingModelDownload'
+import type {
+  ModelWithUrl,
+  ServerDownloadTask
+} from '@/platform/missingModel/missingModelDownload'
 import { fetchAndStoreModelMetadata } from '@/platform/missingModel/missingModelMetadata'
 import { useMissingModelStore } from '@/platform/missingModel/missingModelStore'
+import { useAssetsStore } from '@/stores/assetsStore'
+
+const SERVER_DOWNLOAD_POLL_MS = 1000
 
 export function useMissingModelDownload() {
   const store = useMissingModelStore()
@@ -24,8 +31,40 @@ export function useMissingModelDownload() {
     await fetchAndStoreModelMetadata(url, store)
   }
 
-  function downloadMissingModel(model: ModelWithUrl): void {
-    downloadModel(model, store.folderPaths)
+  function serverDownloadFor(url: string): ServerDownloadTask | undefined {
+    return store.serverDownloads[url]
+  }
+
+  async function pollServerDownload(
+    model: ModelWithUrl,
+    taskId: string
+  ): Promise<void> {
+    while (true) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, SERVER_DOWNLOAD_POLL_MS)
+      )
+      const task = await fetchServerModelDownload(taskId)
+      if (!task) continue
+      store.setServerDownload(model.url, task)
+      if (task.status === 'completed') {
+        useAssetsStore().invalidateModelsForCategory(model.directory)
+        return
+      }
+      if (task.status === 'failed') return
+    }
+  }
+
+  async function downloadMissingModel(model: ModelWithUrl): Promise<void> {
+    const active = serverDownloadFor(model.url)
+    if (active?.status === 'running' || active?.status === 'created') return
+
+    const task = await downloadModel(model, store.folderPaths)
+    if (!task) return
+
+    store.setServerDownload(model.url, task)
+    if (task.status === 'created' || task.status === 'running') {
+      void pollServerDownload(model, task.task_id)
+    }
   }
 
   // Always try the bridge: it opens in the user's Electron session. isRemote()
@@ -55,6 +94,7 @@ export function useMissingModelDownload() {
     gatedRepoUrlFor,
     prefetchModelMetadata,
     downloadMissingModel,
+    serverDownloadFor,
     openModelAccessPage
   }
 }

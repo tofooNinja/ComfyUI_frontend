@@ -8,6 +8,7 @@ import { app } from '@/scripts/app'
 import { isMissingWarningVisible } from '@/platform/settings/missingWarningVisibility'
 import { useToastStore } from '@/platform/updates/common/toastStore'
 import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
+import type { ServerDownloadTask } from '@/platform/missingModel/missingModelDownload'
 import type { MissingModelCandidate } from '@/platform/missingModel/types'
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { getAncestorExecutionIds } from '@/types/nodeIdentification'
@@ -97,6 +98,8 @@ export const useMissingModelStore = defineStore('missingModel', () => {
   const folderPaths = ref<Record<string, string[]>>({})
   const fileSizes = ref<Record<string, number>>({})
   const gatedRepoUrls = ref<Record<string, string>>({})
+  /** Server-side download tasks keyed by model URL. */
+  const serverDownloads = ref<Record<string, ServerDownloadTask>>({})
 
   let _verificationAbortController: AbortController | null = null
 
@@ -257,6 +260,10 @@ export const useMissingModelStore = defineStore('missingModel', () => {
     fileSizes.value[url] = size
   }
 
+  function setServerDownload(url: string, task: ServerDownloadTask) {
+    serverDownloads.value[url] = task
+  }
+
   function setGatedRepoUrl(url: string, repoUrl: string) {
     gatedRepoUrls.value[url] = repoUrl
   }
@@ -331,9 +338,11 @@ export const useMissingModelStore = defineStore('missingModel', () => {
     folderPaths,
     fileSizes,
     gatedRepoUrls,
+    serverDownloads,
 
     setFolderPaths,
     setFileSize,
-    setGatedRepoUrl
+    setGatedRepoUrl,
+    setServerDownload
   }
 })

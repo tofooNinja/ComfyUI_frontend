@@ -12,11 +12,19 @@ import {
   toBrowsableUrl
 } from './missingModelDownload'
 
-const { fetchMock, mockIsDesktop, mockStartDownload } = vi.hoisted(() => ({
-  fetchMock: vi.fn(),
-  mockIsDesktop: { value: false },
-  mockStartDownload: vi.fn()
-}))
+const { fetchMock, mockFetchApi, mockIsDesktop, mockStartDownload } =
+  vi.hoisted(() => ({
+    fetchMock: vi.fn(),
+    mockFetchApi: vi.fn(),
+    mockIsDesktop: { value: false },
+    mockStartDownload: vi.fn()
+  }))
+
+vi.mock(import('@/scripts/api'), async (importOriginal) => {
+  const actual = await importOriginal()
+  actual.api.fetchApi = mockFetchApi
+  return actual
+})
 
 vi.mock(
   import('@/platform/distribution/types'),
@@ -476,6 +484,70 @@ describe('downloadModel', () => {
   beforeEach(() => {
     mockIsDesktop.value = false
     useSidebarTabStore().activeSidebarTabId = null
+    // Default: the server has no download endpoint (older core).
+    mockFetchApi.mockResolvedValue({ ok: false, status: 404 })
+  })
+
+  it('starts a server-side download when the server supports it', async () => {
+    const task = {
+      task_id: 'task-1',
+      status: 'created',
+      downloaded: 0,
+      total: null,
+      progress: 0,
+      error: null
+    }
+    mockFetchApi.mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: async () => task
+    })
+    const anchorClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+
+    const result = await downloadModel(
+      {
+        name: 'model.safetensors',
+        url: 'https://huggingface.co/org/model/resolve/main/model.safetensors',
+        directory: 'checkpoints'
+      },
+      {}
+    )
+
+    expect(result).toEqual(task)
+    expect(mockFetchApi).toHaveBeenCalledWith(
+      '/models/download',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          url: 'https://huggingface.co/org/model/resolve/main/model.safetensors',
+          folder: 'checkpoints',
+          filename: 'model.safetensors'
+        })
+      })
+    )
+    expect(anchorClick).not.toHaveBeenCalled()
+  })
+
+  it('reports server-side rejections as a failed task', async () => {
+    mockFetchApi.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'file already exists' })
+    })
+
+    const result = await downloadModel(
+      {
+        name: 'model.safetensors',
+        url: 'https://huggingface.co/org/model/resolve/main/model.safetensors',
+        directory: 'checkpoints'
+      },
+      {}
+    )
+
+    expect(result?.status).toBe('failed')
+    expect(result?.error).toBe('file already exists')
   })
 
   it.for([
@@ -487,7 +559,7 @@ describe('downloadModel', () => {
       name: 'fake_model.safetensors',
       url: 'http://localhost:8188/api/devtools/fake_model.safetensors'
     }
-  ])('opens browser downloads for allowlisted URL $url', ({ name, url }) => {
+  ])('opens browser downloads for allowlisted URL $url', async ({ name, url }) => {
     const clickedAnchors: HTMLAnchorElement[] = []
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
       function (this: HTMLAnchorElement) {
@@ -495,7 +567,7 @@ describe('downloadModel', () => {
       }
     )
 
-    downloadModel(
+    await downloadModel(
       {
         name,
         url,
@@ -515,12 +587,12 @@ describe('downloadModel', () => {
     'javascript:alert(1)',
     'not a url',
     'http://localhost:6379/model.safetensors'
-  ])('does not open browser downloads for blocked URLs (%s)', (url) => {
+  ])('does not open browser downloads for blocked URLs (%s)', async (url) => {
     const anchorClick = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => {})
 
-    downloadModel(
+    await downloadModel(
       {
         name: 'model.safetensors',
         url,
@@ -532,7 +604,7 @@ describe('downloadModel', () => {
     expect(anchorClick).not.toHaveBeenCalled()
   })
 
-  it('does not dispatch blocked localhost URLs through Desktop2', () => {
+  it('does not dispatch blocked localhost URLs through Desktop2', async () => {
     const desktopDownloadModel =
       vi.fn<
         (url: string, filename: string, directory: string) => Promise<boolean>
@@ -542,7 +614,7 @@ describe('downloadModel', () => {
       downloadModel: desktopDownloadModel
     }
 
-    downloadModel(
+    await downloadModel(
       {
         name: 'model.safetensors',
         url: 'http://localhost:6379/model.safetensors',
@@ -554,11 +626,11 @@ describe('downloadModel', () => {
     expect(desktopDownloadModel).not.toHaveBeenCalled()
   })
 
-  it('does not dispatch blocked localhost URLs through Electron', () => {
+  it('does not dispatch blocked localhost URLs through Electron', async () => {
     mockIsDesktop.value = true
     useSidebarTabStore().activeSidebarTabId = 'node-library'
 
-    downloadModel(
+    await downloadModel(
       {
         name: 'model.safetensors',
         url: 'http://localhost:6379/model.safetensors',
@@ -571,7 +643,7 @@ describe('downloadModel', () => {
     expect(useSidebarTabStore().activeSidebarTabId).toBe('node-library')
   })
 
-  it('uses the Desktop2 bridge directly instead of the browser fallback', () => {
+  it('uses the Desktop2 bridge directly instead of the browser fallback', async () => {
     const anchorClick = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => {})
@@ -585,7 +657,7 @@ describe('downloadModel', () => {
       downloadModel: desktopDownloadModel
     }
 
-    downloadModel(
+    await downloadModel(
       {
         name: 'model.safetensors',
         url: 'https://huggingface.co/org/model/resolve/main/model.safetensors',
@@ -618,7 +690,7 @@ describe('downloadModel', () => {
     }
   ])(
     'routes a $install install on Desktop builds without isRemote',
-    ({ remoteFlag, expectedDesktopCalls, expectedBrowserCalls }) => {
+    async ({ remoteFlag, expectedDesktopCalls, expectedBrowserCalls }) => {
       const anchorClick = vi
         .spyOn(HTMLAnchorElement.prototype, 'click')
         .mockImplementation(() => {})
@@ -630,7 +702,7 @@ describe('downloadModel', () => {
       if (remoteFlag !== undefined) window.__comfyDesktop2Remote = remoteFlag
       window.__comfyDesktop2 = { downloadModel: desktopDownloadModel }
 
-      downloadModel(
+      await downloadModel(
         {
           name: 'model.safetensors',
           url: 'https://huggingface.co/org/model/resolve/main/model.safetensors',
@@ -661,7 +733,7 @@ describe('downloadModel', () => {
       downloadModel: desktopDownloadModel
     }
 
-    downloadModel(
+    await downloadModel(
       {
         name: 'model.safetensors',
         url: 'https://huggingface.co/org/model/resolve/main/model.safetensors',
@@ -698,7 +770,7 @@ describe('downloadModel', () => {
       downloadModel: desktopDownloadModel
     }
 
-    downloadModel(
+    await downloadModel(
       {
         name: 'model.safetensors',
         url: 'https://huggingface.co/org/model/resolve/main/model.safetensors',
@@ -717,7 +789,7 @@ describe('downloadModel', () => {
     expect(mockStartDownload).not.toHaveBeenCalled()
   })
 
-  it('keeps remote Desktop2 sessions on the browser fallback', () => {
+  it('keeps remote Desktop2 sessions on the browser fallback', async () => {
     const anchorClick = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => {})
@@ -731,7 +803,7 @@ describe('downloadModel', () => {
       downloadModel: desktopDownloadModel
     }
 
-    downloadModel(
+    await downloadModel(
       {
         name: 'model.safetensors',
         url: 'https://huggingface.co/org/model/resolve/main/model.safetensors',
@@ -744,10 +816,10 @@ describe('downloadModel', () => {
     expect(anchorClick).toHaveBeenCalledTimes(1)
   })
 
-  it('opens the model library sidebar before starting a desktop download', () => {
+  it('opens the model library sidebar before starting a desktop download', async () => {
     mockIsDesktop.value = true
 
-    downloadModel(
+    await downloadModel(
       {
         name: 'model.safetensors',
         url: 'https://huggingface.co/org/model/resolve/main/model.safetensors',
