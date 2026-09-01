@@ -149,11 +149,16 @@ const mockDeleteAsset = vi.hoisted(() => vi.fn())
 const mockCreateAssetExport = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ task_id: 'test-task-id', status: 'pending' })
 )
+const mockGetAssetsPageByTag = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ assets: [], total: 0, has_more: false })
+)
 vi.mock('../services/assetService', () => ({
   assetService: {
     deleteAsset: mockDeleteAsset,
-    createAssetExport: mockCreateAssetExport
-  }
+    createAssetExport: mockCreateAssetExport,
+    getAssetsPageByTag: mockGetAssetsPageByTag
+  },
+  OUTPUT_TAG: 'output'
 }))
 
 const mockTrackExport = vi.hoisted(() => vi.fn())
@@ -1264,6 +1269,99 @@ describe('useMediaAssetActions', () => {
       })
       expect(mockDeleteAsset).not.toHaveBeenCalled()
       expect(mockUpdateHistory).toHaveBeenCalled()
+    })
+  })
+
+  describe('deleteAssets — OSS hard delete (asset index)', () => {
+    beforeEach(() => {
+      mockIsCloud.value = false
+      mockGetAssetType.mockReturnValue('output')
+      mockDeleteAsset.mockReset()
+      mockDeleteAsset.mockResolvedValue(undefined)
+      mockGetAssetsPageByTag.mockReset()
+      mockGetAssetsPageByTag.mockResolvedValue({
+        assets: [],
+        total: 0,
+        has_more: false
+      })
+      mockShowDialog.mockImplementation(
+        (opts: { props: { onConfirm: () => Promise<void> | void } }) => {
+          void opts.props.onConfirm()
+        }
+      )
+    })
+
+    it('hard-deletes an index-only asset and skips the history API', async () => {
+      mockGetOutputAssetMetadata.mockReturnValue(null)
+      const actions = useMediaAssetActions()
+      const asset = createMockAsset({
+        id: 'uuid-1234',
+        name: 'old_output.png',
+        tags: ['output', 'uploaded']
+      })
+
+      await actions.deleteAssets(asset)
+
+      await vi.waitFor(() => {
+        expect(mockDeleteAsset).toHaveBeenCalledWith('uuid-1234', {
+          deleteContent: true
+        })
+      })
+      expect(vi.mocked(api.deleteItem)).not.toHaveBeenCalled()
+    })
+
+    it('hard-deletes the indexed row AND removes the history entry for a history-backed asset', async () => {
+      mockGetOutputAssetMetadata.mockReturnValue({
+        jobId: 'job-1',
+        nodeId: '9'
+      })
+      mockGetAssetsPageByTag.mockResolvedValue({
+        assets: [{ id: 'uuid-5678', name: 'fresh_output.png' }],
+        total: 1,
+        has_more: false
+      })
+      const actions = useMediaAssetActions()
+      const asset = createMockAsset({
+        id: 'job-1',
+        name: 'fresh_output.png',
+        tags: ['output']
+      })
+
+      await actions.deleteAssets(asset)
+
+      await vi.waitFor(() => {
+        expect(vi.mocked(api.deleteItem)).toHaveBeenCalledWith(
+          'history',
+          'job-1'
+        )
+      })
+      expect(mockDeleteAsset).toHaveBeenCalledWith('uuid-5678', {
+        deleteContent: true
+      })
+    })
+
+    it('still removes the history entry when the index lookup fails', async () => {
+      mockGetOutputAssetMetadata.mockReturnValue({
+        jobId: 'job-2',
+        nodeId: '9'
+      })
+      mockGetAssetsPageByTag.mockRejectedValue(new Error('index down'))
+      const actions = useMediaAssetActions()
+      const asset = createMockAsset({
+        id: 'job-2',
+        name: 'x.png',
+        tags: ['output']
+      })
+
+      await actions.deleteAssets(asset)
+
+      await vi.waitFor(() => {
+        expect(vi.mocked(api.deleteItem)).toHaveBeenCalledWith(
+          'history',
+          'job-2'
+        )
+      })
+      expect(mockDeleteAsset).not.toHaveBeenCalled()
     })
   })
 

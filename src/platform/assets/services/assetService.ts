@@ -42,6 +42,8 @@ export interface AssetPaginationOptions extends PaginationOptions {
    * server resumes after that cursor and `offset` is ignored.
    */
   after?: string
+  /** Server-side substring filter on the asset name (`name_contains`). */
+  nameContains?: string
   signal?: AbortSignal
 }
 
@@ -50,6 +52,7 @@ interface AssetRequestOptions extends PaginationOptions {
   excludeTags?: string[]
   includePublic?: boolean
   after?: string
+  nameContains?: string
   signal?: AbortSignal
 }
 
@@ -373,6 +376,7 @@ function createAssetService() {
       limit = DEFAULT_LIMIT,
       offset,
       after,
+      nameContains,
       includePublic,
       signal
     } = options
@@ -392,6 +396,9 @@ function createAssetService() {
       queryParams.set('after', after)
     } else if (offset !== undefined && offset > 0) {
       queryParams.set('offset', offset.toString())
+    }
+    if (nameContains !== undefined && nameContains !== '') {
+      queryParams.set('name_contains', nameContains)
     }
     if (includePublic !== undefined) {
       queryParams.set('include_public', includePublic ? 'true' : 'false')
@@ -740,11 +747,20 @@ function createAssetService() {
       limit = DEFAULT_LIMIT,
       offset = 0,
       after,
+      nameContains,
       signal
     }: AssetPaginationOptions = {}
   ): Promise<AssetResponse> {
     return await handleAssetRequest(
-      { includeTags: [tag], limit, offset, after, includePublic, signal },
+      {
+        includeTags: [tag],
+        limit,
+        offset,
+        after,
+        nameContains,
+        includePublic,
+        signal
+      },
       `assets for tag ${tag}`
     )
   }
@@ -855,8 +871,14 @@ function createAssetService() {
    * @returns Promise<void>
    * @throws Error if deletion fails
    */
-  async function deleteAsset(id: AssetId): Promise<void> {
-    const res = await api.fetchApi(`${ASSETS_ENDPOINT}/${id}`, {
+  async function deleteAsset(
+    id: AssetId,
+    { deleteContent = false }: { deleteContent?: boolean } = {}
+  ): Promise<void> {
+    // deleteContent maps to our fork backend's ?delete_content=true — a hard
+    // delete that also removes the on-disk file once the asset is orphaned.
+    const suffix = deleteContent ? '?delete_content=true' : ''
+    const res = await api.fetchApi(`${ASSETS_ENDPOINT}/${id}${suffix}`, {
       method: 'DELETE'
     })
 

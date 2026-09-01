@@ -39,7 +39,7 @@ import { useAssetExportStore } from '@/stores/assetExportStore'
 
 import type { AssetItem } from '../schemas/assetSchema'
 import { MediaAssetKey } from '../schemas/mediaAssetSchema'
-import { assetService } from '../services/assetService'
+import { OUTPUT_TAG, assetService } from '../services/assetService'
 
 const EXCLUDED_TAGS = new Set(['models', 'input', 'output'])
 
@@ -95,6 +95,40 @@ export function useMediaAssetActions() {
   const nodeDefStore = useNodeDefStore()
 
   /**
+   * OSS: resolve the asset-DB uuid(s) behind an output asset so the files can
+   * be hard-deleted. Indexed items already carry their uuid; history-derived
+   * items (id = jobId) may group several output files, each with its own DB
+   * row, looked up by exact filename. Ambiguous matches (same filename in
+   * several subfolders) are skipped rather than guessed at.
+   */
+  const resolveIndexedOutputIds = async (
+    asset: AssetItem
+  ): Promise<string[]> => {
+    const metadata = getOutputAssetMetadata(asset.user_metadata)
+    if (!metadata) return [asset.id]
+    const savedOutputs = (metadata.allOutputs ?? []).filter(
+      (output) => output.type === 'output'
+    )
+    const filenames = savedOutputs.length
+      ? savedOutputs.map((output) => output.filename)
+      : [asset.name]
+    const ids: string[] = []
+    for (const filename of filenames) {
+      try {
+        const page = await assetService.getAssetsPageByTag(OUTPUT_TAG, true, {
+          nameContains: filename,
+          limit: 50
+        })
+        const matches = page.assets.filter((a) => a.name === filename)
+        if (matches.length === 1) ids.push(matches[0].id)
+      } catch {
+        // Index lookup is best-effort; the history entry still gets removed.
+      }
+    }
+    return ids
+  }
+
+  /**
    * Internal helper to perform the API deletion for a single asset
    * Handles both output assets (via history API) and input assets (via asset service)
    * @throws Error if deletion fails or is not allowed
@@ -106,12 +140,28 @@ export function useMediaAssetActions() {
     // Temp files (e.g. preview-node outputs) are history-backed outputs that
     // happen to live in the temp dir, so they delete via the history API too.
     if (assetType === 'output' || assetType === 'temp') {
-      const jobId =
-        getOutputAssetMetadata(asset.user_metadata)?.jobId || asset.id
-      if (!jobId) {
+      const jobId = getOutputAssetMetadata(asset.user_metadata)?.jobId
+      // OSS fork: really delete output files — remove the asset-DB rows and
+      // their on-disk files (temp files aren't indexed, history handles them).
+      if (!isCloud && assetType === 'output') {
+        const ids = await resolveIndexedOutputIds(asset)
+        for (const id of ids) {
+          try {
+            await assetService.deleteAsset(id, { deleteContent: true })
+          } catch (err) {
+            // For an index-only item there is no history entry to fall back
+            // to — surface the failure instead of toasting success.
+            if (!jobId) throw err
+            console.error(`Failed to hard-delete asset ${id}:`, err)
+          }
+        }
+        if (!jobId) return
+      }
+      const historyId = jobId || asset.id
+      if (!historyId) {
         throw new Error('Unable to extract job ID from asset')
       }
-      await api.deleteItem('history', jobId)
+      await api.deleteItem('history', historyId)
     } else {
       // Input assets can only be deleted in cloud environment
       if (!isCloud) {
