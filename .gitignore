@@ -120,3 +120,8 @@ matrix-proof/
 browser_tests/fixtures/data/agent/conversations/recordings/
 apps/website/acceptance-results/
 apps/website/acceptance-report/
+
+# wheel-build artifacts (fork: built locally, never committed)
+comfyui_frontend_package/build/
+comfyui_frontend_package/comfyui_frontend_package/static/
+comfyui_frontend_package/dist/

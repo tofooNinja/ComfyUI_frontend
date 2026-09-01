@@ -847,8 +847,14 @@ function createAssetService() {
    * @returns Promise<void>
    * @throws Error if deletion fails
    */
-  async function deleteAsset(id: AssetId): Promise<void> {
-    const res = await api.fetchApi(`${ASSETS_ENDPOINT}/${id}`, {
+  async function deleteAsset(
+    id: AssetId,
+    { deleteContent = false }: { deleteContent?: boolean } = {}
+  ): Promise<void> {
+    // deleteContent maps to our fork backend's ?delete_content=true — a hard
+    // delete that also removes the on-disk file once no record uses it.
+    const suffix = deleteContent ? '?delete_content=true' : ''
+    const res = await api.fetchApi(`${ASSETS_ENDPOINT}/${id}${suffix}`, {
       method: 'DELETE'
     })
 

@@ -706,7 +706,12 @@ export function useMediaAssetActions() {
 
     let deletedAssetCount = 0
     async function deleteAsset(operation: AssetDeletion) {
-      await assetService.deleteAsset(operation.id)
+      // OSS fork: really delete generated outputs — our core's
+      // ?delete_content=true also removes the on-disk file (upstream only
+      // drops the DB record and leaves the file behind).
+      const deleteContent =
+        !isCloud && (operation.tags ?? []).includes('output')
+      await assetService.deleteAsset(operation.id, { deleteContent })
       deletedAssetCount++
       for (const variant of operation.variants) deletedVariants.add(variant)
       for (const tag of operation.tags ?? []) {

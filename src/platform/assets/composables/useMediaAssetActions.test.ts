@@ -1632,6 +1632,45 @@ describe('useMediaAssetActions', () => {
     })
   })
 
+  // Fork: OSS deletes of generated outputs pass deleteContent so the core
+  // fork also removes the on-disk file.
+  describe('deleteAssets - OSS hard delete of outputs', () => {
+    beforeEach(() => {
+      mockIsCloud.value = false
+      vi.mocked(api.getServerFeature).mockReturnValue(true)
+      mockDeleteAsset.mockResolvedValue(undefined)
+      mockShowDialog.mockImplementation(
+        ({ props }: { props: { onConfirm: (confirmed: boolean) => void } }) => {
+          props.onConfirm(true)
+        }
+      )
+      mockAppGraph.value = { nodes: [] }
+    })
+
+    it.for([
+      { tags: ['output'], deleteContent: true },
+      { tags: ['input'], deleteContent: false }
+    ])(
+      'passes deleteContent=$deleteContent for $tags assets',
+      async ({ tags, deleteContent }) => {
+        mockGetAssetType.mockReturnValue(tags[0])
+        const { actions, unmount } = mountMediaActions()
+        const asset = createMockAsset({
+          id: '7d0e8c1a-3b2f-4a5e-9c6d-1e2f3a4b5c6d',
+          name: 'generated.png',
+          tags
+        })
+
+        await expect(actions.deleteAssets(asset)).resolves.toBe(true)
+
+        expect(mockDeleteAsset).toHaveBeenCalledWith(asset.id, {
+          deleteContent
+        })
+        unmount()
+      }
+    )
+  })
+
   describe('deleteAssets - cancellation', () => {
     beforeEach(() => {
       mockIsCloud.value = true
@@ -1980,7 +2019,7 @@ describe('useMediaAssetActions', () => {
 
       await useMediaAssetActions().deleteAssets(target)
 
-      expect(mockDeleteAsset).toHaveBeenCalledWith('target')
+      expect(mockDeleteAsset).toHaveBeenCalledWith('target', { deleteContent: false })
       expect(mockInputAssets.items.map((item) => item.id)).toEqual(['keep'])
     })
   })
