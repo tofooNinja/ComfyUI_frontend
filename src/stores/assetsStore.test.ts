@@ -206,6 +206,13 @@ describe('assetsStore - Refactored (Option A)', () => {
     setActivePinia(createTestingPinia({ stubActions: false }))
     store = useAssetsStore()
     vi.clearAllMocks()
+    // The Generated tab falls through to the asset index once history is
+    // exhausted (OSS restart-persistence); default to an empty index.
+    vi.mocked(assetService.getAssetsPageByTag).mockResolvedValue({
+      assets: [],
+      total: 0,
+      has_more: false
+    })
   })
 
   describe('Initial Load', () => {
@@ -272,6 +279,81 @@ describe('assetsStore - Refactored (Option A)', () => {
         'prompt_0',
         'prompt_2'
       ])
+    })
+  })
+
+  describe('Asset index fallback (OSS)', () => {
+    const createMockIndexedAsset = (name: string, createdAt: string) => ({
+      id: `asset-${name}`,
+      name,
+      display_name: name,
+      size: 123,
+      tags: ['output', 'uploaded'],
+      preview_url: `/api/view?type=output&filename=${name}`,
+      created_at: createdAt,
+      user_metadata: { filename: name }
+    })
+
+    it('backs the Generated tab with the asset index when history is empty', async () => {
+      vi.mocked(api.getHistory).mockResolvedValue([])
+      vi.mocked(assetService.getAssetsPageByTag).mockResolvedValue({
+        assets: [
+          createMockIndexedAsset('old_1.png', '2026-08-30T10:00:00Z'),
+          createMockIndexedAsset('old_2.png', '2026-08-31T10:00:00Z')
+        ],
+        total: 2,
+        has_more: false
+      })
+
+      await store.updateHistory()
+
+      expect(store.historyAssets).toHaveLength(2)
+      // Sorted newest-first regardless of API order
+      expect(store.historyAssets[0].name).toBe('old_2.png')
+      expect(store.hasMoreHistory).toBe(false)
+    })
+
+    it('dedupes by filename, history entry wins', async () => {
+      vi.mocked(api.getHistory).mockResolvedValue([createMockJobItem(0)])
+      vi.mocked(assetService.getAssetsPageByTag).mockResolvedValue({
+        assets: [
+          createMockIndexedAsset('output_0.png', '2026-08-31T10:00:00Z'),
+          createMockIndexedAsset('old_1.png', '2026-08-30T10:00:00Z')
+        ],
+        total: 2,
+        has_more: false
+      })
+
+      await store.updateHistory()
+
+      expect(store.historyAssets).toHaveLength(2)
+      const dup = store.historyAssets.find((a) => a.name === 'output_0.png')
+      // History-derived entry (id = jobId) wins over the indexed one
+      expect(dup?.id).toBe('prompt_0')
+    })
+
+    it('keeps paginating the asset index after history is exhausted', async () => {
+      vi.mocked(api.getHistory).mockResolvedValue([])
+      vi.mocked(assetService.getAssetsPageByTag)
+        .mockResolvedValueOnce({
+          assets: [createMockIndexedAsset('a.png', '2026-08-31T10:00:00Z')],
+          total: 2,
+          has_more: true
+        })
+        .mockResolvedValueOnce({
+          assets: [createMockIndexedAsset('b.png', '2026-08-30T10:00:00Z')],
+          total: 2,
+          has_more: false
+        })
+
+      await store.updateHistory()
+      expect(store.hasMoreHistory).toBe(true)
+
+      await store.loadMoreHistory()
+
+      expect(store.historyAssets).toHaveLength(2)
+      expect(store.hasMoreHistory).toBe(false)
+      expect(assetService.getAssetsPageByTag).toHaveBeenCalledTimes(2)
     })
   })
 

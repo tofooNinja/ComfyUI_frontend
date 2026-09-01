@@ -124,6 +124,38 @@ export const useAssetsStore = defineStore('assets', () => {
 
   const loadedIds = shallowReactive(new Set<string>())
 
+  // OSS only: filenames already represented in allHistoryItems. History items
+  // and indexed asset items live in different id spaces, so cross-source
+  // dedupe has to key on the filename.
+  const loadedNames = new Set<string>()
+
+  // OSS only: pagination state for the asset-index side of the Generated tab.
+  const indexedOutputOffset = ref(0)
+  let indexedOutputNextCursor: string | undefined
+  const hasMoreIndexedOutputs = ref(true)
+
+  /**
+   * OSS only: fetch one page of indexed output assets from /api/assets.
+   * Unlike /history, the asset DB survives server restarts, so it backs the
+   * Generated tab once the volatile in-memory history is exhausted.
+   */
+  const fetchIndexedOutputPage = async (): Promise<AssetItem[]> => {
+    const requestedAfter = indexedOutputNextCursor
+    const page = await assetService.getAssetsPageByTag(OUTPUT_TAG, true, {
+      limit: BATCH_SIZE,
+      ...(requestedAfter !== undefined
+        ? { after: requestedAfter }
+        : { offset: indexedOutputOffset.value })
+    })
+    indexedOutputOffset.value += page.assets.length
+    const cursorStuck =
+      page.next_cursor !== undefined && page.next_cursor === requestedAfter
+    indexedOutputNextCursor = cursorStuck ? undefined : page.next_cursor
+    hasMoreIndexedOutputs.value =
+      page.assets.length > 0 && page.has_more && !cursorStuck
+    return page.assets
+  }
+
   const fetchInputFiles = isCloud
     ? fetchInputFilesFromCloud
     : fetchInputFilesFromAPI
@@ -158,6 +190,10 @@ export const useAssetsStore = defineStore('assets', () => {
       hasMoreHistory.value = true
       allHistoryItems.value = []
       loadedIds.clear()
+      loadedNames.clear()
+      indexedOutputOffset.value = 0
+      indexedOutputNextCursor = undefined
+      hasMoreIndexedOutputs.value = true
     }
 
     // Fetch from server with offset
@@ -167,10 +203,25 @@ export const useAssetsStore = defineStore('assets', () => {
 
     // Convert JobListItems to AssetItems
     const newAssets = mapHistoryToAssets(history)
+    const historyHasMore = history.length === BATCH_SIZE
+
+    // OSS: once the in-memory history runs dry, continue from the persistent
+    // asset index so outputs generated before the last server restart still
+    // show up. History entries win the dedupe (richer metadata: stacks,
+    // workflow, execution time).
+    for (const asset of newAssets) loadedNames.add(asset.name)
+    const freshAssets = [...newAssets]
+    if (!isCloud && !historyHasMore && hasMoreIndexedOutputs.value) {
+      for (const asset of await fetchIndexedOutputPage()) {
+        if (loadedNames.has(asset.name)) continue
+        loadedNames.add(asset.name)
+        freshAssets.push(asset)
+      }
+    }
 
     if (loadMore) {
       // Filter out duplicates and insert in sorted order
-      for (const asset of newAssets) {
+      for (const asset of freshAssets) {
         if (loadedIds.has(asset.id)) {
           continue // Skip duplicates
         }
@@ -191,14 +242,19 @@ export const useAssetsStore = defineStore('assets', () => {
         }
       }
     } else {
-      // Initial load: replace all
-      allHistoryItems.value = newAssets
-      newAssets.forEach((asset) => loadedIds.add(asset.id))
+      // Initial load: replace all (re-sort — the indexed tail interleaves)
+      allHistoryItems.value = freshAssets.sort(
+        (a, b) =>
+          new Date(b.created_at ?? 0).getTime() -
+          new Date(a.created_at ?? 0).getTime()
+      )
+      freshAssets.forEach((asset) => loadedIds.add(asset.id))
     }
 
     // Update pagination state
     historyOffset.value += BATCH_SIZE
-    hasMoreHistory.value = history.length === BATCH_SIZE
+    hasMoreHistory.value =
+      historyHasMore || (!isCloud && hasMoreIndexedOutputs.value)
 
     if (allHistoryItems.value.length > MAX_HISTORY_ITEMS) {
       const removed = allHistoryItems.value.slice(MAX_HISTORY_ITEMS)
